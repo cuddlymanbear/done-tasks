@@ -1,0 +1,6 @@
+name: done-tasks
+version: 1.0.0
+description: "Done Tasks summary plug-in — stores a short human-readable digest and a deterministic AI review flag for every completed Kanban task, and backfills them on demand."
+author: "NousResearch (Osoyoos Signs fleet)"
+provides_hooks:
+  - kanban_task_completed

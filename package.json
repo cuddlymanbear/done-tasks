@@ -1,0 +1,16 @@
+{
+  "name": "done-tasks-plugin-harnesses",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Test-only dev dependencies for the Done Tasks UI harnesses (tests/ui). The plug-in itself needs no build step and no dependencies.",
+  "scripts": {
+    "test:ui": "node --import ./tests/ui/loader-hook.mjs tests/ui/harness.mjs && node --import ./tests/ui/loader-hook.mjs tests/ui/interaction.mjs && node --import ./tests/ui/loader-hook.mjs tests/ui/realbackend.mjs",
+    "test:render": "python3 tests/ui/render_check.py"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  }
+}

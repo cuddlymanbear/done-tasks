@@ -1,0 +1,44 @@
+# --- secrets / credentials: never commit these ------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*service_account*.json
+credentials*.yaml
+credentials*.yml
+secrets/
+*token.json
+google_token*.json
+auth.json
+
+# --- python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- node -------------------------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-error.log*
+.pnpm-store/
+
+# --- harness output (screenshots, rendered markup) --------------------------
+tests/ui/out/
+*.png
+
+# --- build / editor / OS ----------------------------------------------------
+dist/
+build/
+coverage/
+.DS_Store
+Thumbs.db
+*.log
+*.swp
+.idea/
+.vscode/

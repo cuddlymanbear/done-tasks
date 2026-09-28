@@ -1,0 +1,77 @@
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+index 0d0199950e..d3ad57d780 100644
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -1061,19 +1061,58 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
+     last_event_id INTEGER NOT NULL DEFAULT 0,
+     last_ping_event_id INTEGER NOT NULL DEFAULT 0,
+     PRIMARY KEY (task_id, platform, chat_id, thread_id)
+ );
+ 
++-- Done Tasks plug-in: per-completed-task digest (summary + review flag + soft archive).
++-- One row per done task, written by the summary pass in ``hermes_cli.done_tasks_summary``
++-- (completion hook + 60s sweep); rows are never deleted by this feature. ``archive_state``
++-- is the plug-in's OWN soft flag — it is NOT ``tasks.status='archived'`` (that is the
++-- board's terminal state). See DONE-TASKS-PLUGIN-SPEC.md §1.
++CREATE TABLE IF NOT EXISTS task_done_summaries (
++    task_id         TEXT PRIMARY KEY,
++    -- Denormalised at generation time so a listing renders in ONE query and a later
++    -- title/assignee edit does not silently rewrite history.
++    title           TEXT NOT NULL,
++    assignee        TEXT,
++    completed_at    INTEGER NOT NULL,
++    -- LLM pass (or fallback, see done_tasks_summary). 1-3 sentences, plain words, <= 600 chars.
++    summary         TEXT NOT NULL,
++    -- illm | llm_repaired | fallback_title_body | manual
++    summary_source  TEXT NOT NULL DEFAULT 'llm',
++    -- JSON list of absolute paths / URLs the task produced (may be []).
++    artifacts       TEXT NOT NULL DEFAULT '[]',
++    artifact_count  INTEGER NOT NULL DEFAULT 0,
++    review_flag     INTEGER NOT NULL DEFAULT 0,
++    -- JSON list of fired rule ids, machine-readable, e.g. ["R2","R5"].
++    review_reasons  TEXT NOT NULL DEFAULT '[]',
++    -- Human-readable one-liner for the badge tooltip, <= 200 chars.
++    review_reason   TEXT,
++    review_rule_version TEXT NOT NULL DEFAULT 'v1',
++    -- active | archive_requested | archived   (never mirrors tasks.status)
++    archive_state   TEXT NOT NULL DEFAULT 'active',
++    archive_requested_at INTEGER,
++    archive_requested_by TEXT,
++    archived_at     INTEGER,
++    archived_by     TEXT,
++    generated_at    INTEGER NOT NULL,
++    generated_by    TEXT,
++    attempt_count   INTEGER NOT NULL DEFAULT 1,
++    last_error      TEXT
++);
++
+ CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
+ CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
+ CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
+ CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
+ CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
+ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
+ CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
+ CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
+ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
++CREATE INDEX IF NOT EXISTS idx_done_sum_completed    ON task_done_summaries(completed_at DESC);
++CREATE INDEX IF NOT EXISTS idx_done_sum_state        ON task_done_summaries(archive_state, review_flag);
+ """
+ 
+ 
+ # --- ID generation ---
+ 
+@@ -3927,11 +3966,12 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
+ 
+ 
+ def _delete_task_relations(conn: sqlite3.Connection, task_id: str) -> None:
+     """Delete every row referencing ``task_id`` (schema has no ON DELETE CASCADE)."""
+     conn.execute("DELETE FROM task_links WHERE parent_id = ? OR child_id = ?", (task_id, task_id))
+-    for table in ("task_comments", "task_events", "task_runs", "kanban_notify_subs"):
++    for table in ("task_comments", "task_events", "task_runs", "kanban_notify_subs",
++                  "task_done_summaries"):
+         conn.execute(f"DELETE FROM {table} WHERE task_id = ?", (task_id,))
+ 
+ 
+ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
+     """Hard-delete an ARCHIVED task (+ related rows); anything else must be
