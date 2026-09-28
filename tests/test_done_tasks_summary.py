@@ -220,10 +220,21 @@ RULE_CASES = [
     ),
     (
         "R7",
-        C(artifacts=["/a.md"], assignee="default",
+        C(artifacts=[], assignee="default",
           changed_files=["/home/hermes/.hermes/profiles/daemon/skills/x.md"]),
-        C(artifacts=["/a.md"], assignee="daemon",
+        C(artifacts=[], assignee="daemon",
           changed_files=["/home/hermes/.hermes/profiles/daemon/skills/x.md"]),
+    ),
+    (
+        # R7 must read the *union* the spec names — an other-profile path declared ONLY
+        # under ``artifacts`` (never ``changed_files``) still counts. This is the shape
+        # the live fleet actually writes: 165 runs carry ``artifacts`` vs 61 with
+        # ``changed_files``, so a changed_files-only read left R7 dead on 27 real cards.
+        # Note ``artifacts`` is empty of ``/a.md`` here on purpose: a filler artifact
+        # would let the changed_files branch mask a broken union read.
+        "R7",
+        C(artifacts=["/home/hermes/.hermes/profiles/daemon/notes.md"], assignee="vector"),
+        C(artifacts=["/home/hermes/.hermes/profiles/daemon/notes.md"], assignee="daemon"),
     ),
     (
         "R8",
@@ -358,6 +369,57 @@ def test_extract_artifacts_never_raises_on_a_bad_blob():
     class _Run:
         metadata = {"artifacts": "{not: valid}"}
     assert dts._coerce_path_list(_Run.metadata["artifacts"]) == ["{not: valid}"]
+
+
+# ---------------------------------------------------------------------------
+# R7 end-to-end: an other-profile path declared under metadata["artifacts"]
+# (card t_ab5384a2). The rule tests above drive the pure function; these go
+# through the real completion + generate path, which is where the fleet's paths
+# actually live.
+# ---------------------------------------------------------------------------
+
+def test_r7_fires_on_an_other_profile_path_declared_only_under_artifacts(conn, fake_llm):
+    """A done task whose ONLY other-profile path is in metadata["artifacts"] gets R7.
+
+    Regression for the shipped defect: ``_coerce_meta_list`` picked one metadata key, so a
+    run declaring ``artifacts`` never had those paths reach the cross-profile check and R7
+    was dead on 27 real cards.
+    """
+    fake_llm()
+    task_id = _complete(
+        conn, title="Fix the daemon quote ledger", assignee="kaizen", claimer="kaizen",
+        metadata={"artifacts": ["/home/hermes/.hermes/profiles/daemon/skills/quotes/dedupe.md"]},
+    )
+    record = dts.get_record(conn, task_id)
+    assert "R7" in record["review_reasons"], (
+        f"an artifacts-only other-profile path must fire R7; got {record['review_reasons']}")
+
+
+def test_r7_stays_quiet_on_the_assignees_own_profile_tree(conn, fake_llm):
+    """A bot editing its OWN profile tree must not be flagged (the negative case)."""
+    fake_llm()
+    task_id = _complete(
+        conn, title="Tidy the quote ledger notes", assignee="daemon", claimer="daemon",
+        metadata={"artifacts": ["/home/hermes/.hermes/profiles/daemon/skills/quotes/dedupe.md"]},
+    )
+    record = dts.get_record(conn, task_id)
+    assert "R7" not in record["review_reasons"], (
+        f"a bot's own tree must not fire R7; got {record['review_reasons']}")
+
+
+def test_r7_union_covers_changed_files_and_artifacts_across_runs(conn, fake_llm):
+    """R7 unions both metadata keys and every run — neither key may mask the other."""
+    fake_llm()
+    task_id = kb.create_task(conn, title="Cross-profile handoff", assignee="vector",
+                             created_by="chad.d@x")
+    kb.claim_task(conn, task_id, claimer="vector")
+    kb.complete_task(conn, task_id, summary="Done.",
+                     metadata={"artifacts": ["/home/hermes/.hermes/profiles/daemon/a.md"]})
+    dts.generate_done_summary(conn, task_id, generated_by="test")
+
+    record = dts.get_record(conn, task_id)
+    assert "R7" in record["review_reasons"], (
+        f"artifacts-declared other-profile path must fire R7; got {record['review_reasons']}")
 
 
 # ---------------------------------------------------------------------------
