@@ -8,6 +8,7 @@
  * Run: node --import ./loader-hook.mjs interaction.mjs
  */
 import { PLUGIN, requireFromHost as req } from './paths.mjs'
+import fs from 'node:fs'
 
 const React = req('react')
 const jsxRuntime = req('react/jsx-runtime')
@@ -106,7 +107,18 @@ const baseOk1 = countRows() === 2
 const baseOk2 = rowCount('First finished thing') === 1
 const baseOk3 = !!document.querySelector('[data-badge="warn"]')
 
+// --- the actor is the SESSION identity, never a hardcoded address ----------
+// Regression guard for defect t_87e98033: the panel used to send a constant
+// `chad.d@osoyoossigns.ca`, so every audit row named that person no matter who
+// clicked. The host identity must win, and with no identity the fallback must
+// name the surface — a person's address is never acceptable either way.
+const IDENTITY = 'ada.l@osoyoossigns.ca'
+const EMAIL_SHAPED = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/
+const FALLBACK = 'desktop'
+
 // --- click Mark for archive on the FIRST row ------------------------------
+// The host exposes the acting session before the click, as it does in the app.
+dom.window.__HERMES_USER_EMAIL__ = IDENTITY
 const archiveTarget = Array.from(document.querySelectorAll('li'))
   .find((li) => li.textContent.includes('First finished thing'))
 const btn = Array.from(archiveTarget.querySelectorAll('button'))
@@ -128,6 +140,55 @@ const clickOk1 = !!btn
 const clickOk2 = !!call && call.opts.method === 'POST' && call.opts.body.task_ids[0] === 't_A'
 const clickOk3 = !!call && typeof call.opts.body.actor === 'string' && call.opts.body.actor.length > 0
 const clickOk4 = countRows() === 1 && rowCount('First finished thing') === 0
+
+// The identity the host exposed must be the actor, and it must be an address that
+// is NOT the old hardcoded one — that is what makes this a live identity, not a constant.
+const actorWithIdentity = call ? String(call.opts.body.actor) : ''
+console.log('actor sent           :', JSON.stringify(actorWithIdentity))
+const actorOk1 = actorWithIdentity === IDENTITY
+const actorOk2 = !EMAIL_SHAPED.test(actorWithIdentity.replace(IDENTITY, ''))
+
+// --- the fallback, with the host exposing NO identity ----------------------
+// Unmount and re-mount a fresh page with the identity hooks removed: the actor
+// must then be the surface name, never a person.
+delete dom.window.__HERMES_USER_EMAIL__
+delete dom.window.__HERMES_USER__
+delete dom.window.__HERMES_USER_NAME__
+dom.window.localStorage.clear()
+restCalls.length = 0
+document.getElementById('root').innerHTML = ''
+
+let pageContrib2
+plugin.register({
+  register: () => () => {},
+  registerMany: (cs) => { pageContrib2 = cs.find((c) => c.area === 'routes'); return () => {} },
+  rest: ctx.rest
+})
+const root2 = ReactDOMClient.createRoot(document.getElementById('root'))
+await act(async () => { root2.render(React.createElement(pageContrib2.render)) })
+const target2 = Array.from(document.querySelectorAll('li'))
+  .find((li) => li.textContent.includes('First finished thing'))
+const btn2 = target2 && Array.from(target2.querySelectorAll('button'))
+  .find((b) => b.textContent === 'Mark for archive')
+console.log('\\n=== NO HOST IDENTITY (fallback) ===')
+console.log('button found         :', !!btn2)
+if (btn2) await act(async () => { btn2.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })) })
+await act(async () => { await new Promise((r) => setTimeout(r, 10)) })
+const call2 = restCalls.find((c) => c.path === '/archive')
+const actorNoIdentity = call2 ? String(call2.opts.body.actor) : ''
+console.log('actor sent           :', JSON.stringify(actorNoIdentity))
+const fallbackOk1 = actorNoIdentity === FALLBACK
+const fallbackOk2 = !EMAIL_SHAPED.test(actorNoIdentity)
+
+// --- the shipped source contains no @-shaped literal in the write path -----
+// The defect was a literal address compiled into the panel; a behavioural test
+// alone would pass again if someone re-added one that happens to be unreachable.
+const pluginSrc = fs.readFileSync(PLUGIN, 'utf8')
+const srcEmails = (pluginSrc.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) || [])
+console.log('\\n=== SOURCE LITERALS (desktop/plugin.js) ===')
+console.log('email-shaped literals:', JSON.stringify(srcEmails))
+const srcOk1 = srcEmails.length === 0
+const srcOk2 = !/const\s+ACTOR\s*=/.test(pluginSrc)
 
 // --- the Archived filter recovers it --------------------------------------
 const archivedTab = document.querySelector('[data-opt="archived"]')
@@ -154,6 +215,12 @@ const checks = {
   'click: POST /archive with the row task_id': clickOk2,
   'click: actor supplied (spec requires it)': clickOk3,
   'click: row REMOVED from the default view': clickOk4,
+  'actor: host identity used when exposed (t_87e98033)': actorOk1,
+  'actor: identity is not confusable with the old literal': actorOk2,
+  'actor: falls back to the surface name, not a person': fallbackOk1,
+  'actor: fallback is not an address': fallbackOk2,
+  'source: no @-shaped literal in the panel': srcOk1,
+  'source: no hardcoded ACTOR constant': srcOk2,
   'archived filter selectable (recovery path)': filterOk,
   'needs-review filter selectable': reviewOk
 }
