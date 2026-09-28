@@ -645,3 +645,65 @@ def test_delete_task_relations_cleans_the_plug_in_table(conn, fake_llm):
     assert dts.get_record(conn, task_id) is not None
     kb.delete_task(conn, task_id)
     assert dts.get_record(conn, task_id) is None
+
+
+# ---------------------------------------------------------------------------
+# v3 (card t_1d19e4b5): attention vs noted, and the gated model hint
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("reasons,expected", [
+    ([], dts.REVIEW_PRIORITY_NONE),
+    (["R2"], dts.REVIEW_PRIORITY_NOTED),
+    (["R6", "R4"], dts.REVIEW_PRIORITY_NOTED),
+    (["R2", "R7"], dts.REVIEW_PRIORITY_ATTENTION),
+    (["R8"], dts.REVIEW_PRIORITY_ATTENTION),
+    (["R1", "R9"], dts.REVIEW_PRIORITY_ATTENTION),
+])
+def test_review_priority_grades_each_rule_set(reasons, expected):
+    assert dts.review_priority(reasons) == expected
+
+
+def test_review_priority_ignores_junk():
+    assert dts.review_priority(None) == dts.REVIEW_PRIORITY_NONE
+    assert dts.review_priority(["", None, 7, "R7"]) == dts.REVIEW_PRIORITY_ATTENTION
+
+
+def test_list_done_exposes_review_priority_and_only_attention_filters(conn, fake_llm):
+    """Routine money prose is 'noted'; a live-config change is 'attention'."""
+    fake_llm()
+    routine = _complete(conn, title="Chase the invoice", body="money owed",
+                        metadata={"artifacts": ["/a.md"]})
+    attention = _complete(conn, title="Fix config.yaml for the printer",
+                          body="edit the setting", metadata={"artifacts": ["/b.md"]})
+
+    items = {i["task_id"]: i for i in dts.list_done(conn=conn)["items"]}
+    assert items[routine]["review_flag"] is True
+    assert items[routine]["review_priority"] == dts.REVIEW_PRIORITY_NOTED
+    assert items[attention]["review_priority"] == dts.REVIEW_PRIORITY_ATTENTION
+
+    ids = [i["task_id"] for i in dts.list_done(conn=conn, only_attention=True)["items"]]
+    assert ids == [attention], "the attention view must not show routine money cards"
+    assert dts.list_done(conn=conn, only_attention=True)["total"] == 1
+
+
+def test_model_hint_needs_an_explicit_owner_decision(conn, monkeypatch):
+    """v3 gate: a bare hint is advisory noise — it only counts behind owner_decision=True."""
+    def _hint_only(ctx, task_id):
+        return {"summary": "Repaired the two logo files.", "review_hint": "Worth a look."}, None
+
+    monkeypatch.setattr(dts, "_call_summary_llm", _hint_only)
+    quiet = _complete(conn, title="Repair two logo files", metadata={"artifacts": ["/a.svg"]})
+    assert "R8" not in (dts.get_record(conn, quiet)["review_reasons"] or [])
+
+    def _hint_with_decision(ctx, task_id):
+        return {"summary": "Two options for the board size.", "owner_decision": True,
+                "review_hint": "Pick a board size."}, None
+
+    monkeypatch.setattr(dts, "_call_summary_llm", _hint_with_decision)
+    # No other rule may fire, or R2/R6 would outrank R8 in the priority-ordered reason.
+    asked = _complete(conn, title="Adjust the two logo files",
+                      metadata={"artifacts": ["/a.md"]})
+    record = dts.get_record(conn, asked)
+    assert "R8" in record["review_reasons"]
+    assert record["review_reason"] == "Pick a board size."
+    assert record["review_priority"] == dts.REVIEW_PRIORITY_ATTENTION

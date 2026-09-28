@@ -111,13 +111,29 @@ def get_done_list(
     offset: int = Query(0, ge=0),
     include_archived: bool = Query(False, description="Include soft-archived records"),
     only_review: bool = Query(False, description="Only records flagged for review"),
+    only_attention: bool = Query(
+        False, description="Only records the AI thinks need the owner's eyes (v3)"
+    ),
 ) -> dict[str, Any]:
-    """The default done listing. Archived records are excluded unless asked for."""
+    """The default done listing. Archived records are excluded unless asked for.
+
+    Also kicks one throttled, off-thread sweep (card t_1d19e4b5): the completion hook only
+    fires where this plug-in is loaded, so a bot-authored completion can reach the board with
+    no digest. Opening the panel must never leave it blank — the sweep fills the gap within
+    the next poll, and the request itself is never delayed by it.
+    """
+    from hermes_cli import done_tasks_summary as dts
+
+    try:
+        dts.kick_background_sweep(board=board, generated_by="sweep:ui-open")
+    except Exception as exc:  # pragma: no cover - a read must never fail over a backfill
+        log.debug("done-tasks sweep kick skipped: %s", exc)
     with _board_conn(board) as (resolved, conn):
         payload = dta.list_done(
             conn,
             include_archived=include_archived,
             only_review=only_review,
+            only_attention=only_attention,
             limit=limit,
             offset=offset,
         )
@@ -127,6 +143,7 @@ def get_done_list(
         payload["offset"] = offset
         payload["include_archived"] = bool(include_archived)
         payload["only_review"] = bool(only_review)
+        payload["only_attention"] = bool(only_attention)
         return payload
 
 

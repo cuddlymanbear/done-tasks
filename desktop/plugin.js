@@ -73,7 +73,25 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'done-tasks'
 const PAGE_PATH = '/done-tasks'
-const ACTOR = 'chad.d@osoyoossigns.ca'
+
+// Who is recorded as having filed a task away. Never a guessed person: the host's identity
+// when it exposes one, else the surface itself, so the archive trail stays truthful instead
+// of claiming a name that did not click (filed as defect t_87e98033 against the hardcoded
+// address this replaces).
+function resolveActor() {
+  try {
+    const candidates = [
+      window.__HERMES_USER_EMAIL__,
+      window.__HERMES_USER__,
+      window.__HERMES_USER_NAME__,
+      window.localStorage.getItem('hermes.actor'),
+    ]
+    for (const value of candidates) {
+      if (typeof value === 'string' && value.trim()) return value.trim()
+    }
+  } catch (_e) { /* ignore */ }
+  return 'desktop'
+}
 
 // localStorage key for the dashboard-side board, mirroring the kanban plugin's
 // own key so this page opens on whichever board the user already picked. A
@@ -211,6 +229,29 @@ async function fetchBoardFallback(board) {
 
 // --- the row ---------------------------------------------------------------
 
+/** v3 (card t_1d19e4b5): does this row actually need the owner?
+ *
+ * The badge used to key off `review_flag`, which fires on almost every card once the
+ * routine rules (money words, "deleted", "migrated") match the model's own summary — 94%
+ * of 134 real rows. The backend now grades the fired rules into `review_priority`; the
+ * `review_flag` fallback keeps a row badged when talking to an older payload that has no
+ * priority field yet, so the badge can never silently disappear.
+ */
+function needsAttention(item) {
+  const p = item && item.review_priority
+  if (p === 'attention') return true
+  if (p === 'noted' || p === 'none') return false
+  return !!(item && item.review_flag)
+}
+
+/** A row where rules fired on routine prose only: worth a quiet note, not a badge. */
+function notedReason(item) {
+  if (!item || needsAttention(item)) return null
+  const reasons = item.review_reasons || []
+  if (!reasons.length) return null
+  return item.review_reason || reasons.join(', ')
+}
+
 function ReviewBadge({ item }) {
   const reasons = item.review_reasons || []
   const text = item.review_reason || 'The fleet thinks you should look at this one.'
@@ -239,7 +280,8 @@ function ReviewBadge({ item }) {
 }
 
 function DoneRow({ item, onArchive, archiving, writeEnabled }) {
-  const flagged = !!item.review_flag
+  const flagged = needsAttention(item)
+  const noted = notedReason(item)
   const note = sourceNote(item)
   return jsx('li', {
     className: cn(
@@ -273,6 +315,18 @@ function DoneRow({ item, onArchive, archiving, writeEnabled }) {
             className: 'flex shrink-0 items-center gap-1.5',
             children: [
               flagged ? jsx(ReviewBadge, { item, key: 'badge' }) : null,
+              noted
+                ? jsx('span', {
+                    key: 'noted',
+                    'data-chip': 'noted',
+                    title: `Noted: ${noted}`,
+                    className: cn(
+                      'shrink-0 rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide',
+                      'text-(--ui-text-tertiary) border border-(--ui-stroke-secondary)'
+                    ),
+                    children: 'Noted'
+                  })
+                : null,
               jsx(Button, {
                 key: 'archive',
                 size: 'micro',
@@ -340,7 +394,7 @@ function DoneTasksPage() {
   const includeArchived = view === 'archived'
 
   const query = useQuery({
-    queryKey: [ID, 'done', board, includeArchived, view === 'review'],
+    queryKey: [ID, 'done', board, includeArchived, view === 'review', 'v3'],
     retry: 1,
     refetchInterval: 60000,
     queryFn: async () => {
@@ -349,7 +403,8 @@ function DoneTasksPage() {
         const params = [
           'limit=200',
           `include_archived=${includeArchived ? 'true' : 'false'}`,
-          view === 'review' ? 'only_review=true' : null
+          // v3: the view asks the backend for attention rows only, so `total` is honest.
+          view === 'review' ? 'only_attention=true' : null
         ].filter(Boolean).join('&')
         const payload = await ctxRest(`/done?${params}`)
         if (payload && Array.isArray(payload.items)) return normaliseDone(payload)
@@ -369,7 +424,7 @@ function DoneTasksPage() {
     (it) => localHidden.indexOf(it.task_id) === -1
   )
   const items = useMemo(() => {
-    if (view === 'review') return raw.filter((it) => it.review_flag)
+    if (view === 'review') return raw.filter((it) => needsAttention(it))
     return raw
   }, [raw, view])
 
@@ -379,7 +434,7 @@ function DoneTasksPage() {
     try {
       const res = await ctxRest('/archive', {
         method: 'POST',
-        body: { task_ids: [item.task_id], actor: ACTOR }
+        body: { task_ids: [item.task_id], actor: resolveActor() }
       })
       const ok = res && (res.ok === true || (res.archived || []).indexOf(item.task_id) !== -1)
       if (!ok) {
@@ -402,7 +457,7 @@ function DoneTasksPage() {
     try {
       await ctxRest('/unarchive', {
         method: 'POST',
-        body: { task_ids: [item.task_id], actor: ACTOR }
+        body: { task_ids: [item.task_id], actor: resolveActor() }
       })
       setLocalHidden((prev) => prev.concat([item.task_id]))
     } catch (_e) {
@@ -412,7 +467,7 @@ function DoneTasksPage() {
     }
   }
 
-  const reviewCount = ((query.data && query.data.items) || []).filter((it) => it.review_flag).length
+  const reviewCount = ((query.data && query.data.items) || []).filter((it) => needsAttention(it)).length
 
   return jsxs('div', {
     className: 'flex h-full w-full flex-col gap-3 overflow-hidden p-4 text-sm',

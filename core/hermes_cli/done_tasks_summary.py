@@ -27,6 +27,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,8 +39,14 @@ log = logging.getLogger(__name__)
 
 # --- Versioning -------------------------------------------------------------
 # Rule ids are FROZEN strings; adding a rule bumps REVIEW_RULE_VERSION (spec §3).
-REVIEW_RULE_VERSION = "v1"
-PROMPT_VERSION = "v1"
+#: v3 (card t_1d19e4b5): the badge is what the owner uses to decide where to look, so it must
+#: be selective. Two changes from v2: the model's own hint (R8) is now gated behind an explicit
+#: ``owner_decision`` field — on 134 real rows the hint alone fired on 71% of cards, which made
+#: the badge meaningless — and the read path exposes ``review_priority`` so the badge can be
+#: driven by the rules that report a concrete, checkable change while the routine prose rules
+#: (money words, destructive vocabulary) stay in ``review_reasons`` as a quieter "noted".
+REVIEW_RULE_VERSION = "v3"
+PROMPT_VERSION = "v3"
 SUMMARY_MAX_CHARS = 600
 REVIEW_REASON_MAX_CHARS = 200
 
@@ -82,6 +89,10 @@ _DESTRUCTIVE_RE = re.compile(
 )
 # R7 — a path inside another profile's tree.
 _PROFILE_PATH_RE = re.compile(r"^/home/[^/]+/\.hermes/profiles/([^/]+)/")
+# R9 — the fleet's own Hermes home is where deliverables normally land (reports, scripts,
+# shared state). Writing there is ordinary work, not "escaping the sandbox", and treating it
+# as a stray made R9 fire on nearly every card.
+_HERMES_HOME_PATH_RE = re.compile(r"^/(?:home|Users)/[^/]+/\.hermes/")
 
 #: ``task_runs.status`` values that mean "this run did not finish cleanly" (R5).
 FAILED_RUN_STATUSES = frozenset({
@@ -106,6 +117,30 @@ RULE_SENTENCES: dict[str, str] = {
     "R9": "Wrote outside the normal workspace.",
 }
 RULE_ORDER: tuple[str, ...] = tuple(RULE_SENTENCES)
+
+#: Rules that raise the owner-facing badge (``review_priority == 'attention'``). Each one names
+#: a concrete thing a human can check: a long/large job (R1), live config or credential
+#: material (R3), a retry (R5), another bot's files (R7), or the summariser explicitly asking
+#: for a decision (R8). R2/R4/R6/R9 still flag and are still stored — they are simply "noted",
+#: because on this fleet they match most cards' prose (63% of rows mention money, 35% mention
+#: destructive words as something that was *done*), so badging on them told the owner nothing.
+REVIEW_ATTENTION_RULES: frozenset[str] = frozenset({"R1", "R3", "R5", "R7", "R8"})
+REVIEW_PRIORITY_ATTENTION = "attention"
+REVIEW_PRIORITY_NOTED = "noted"
+REVIEW_PRIORITY_NONE = "none"
+
+
+def review_priority(reasons: Iterable[str] | None) -> str:
+    """``'attention' | 'noted' | 'none'`` for a fired-rule set.
+
+    Pure, derived from the stored ``review_reasons`` — no extra column, no migration, so
+    history can be re-graded without a regeneration pass.
+    """
+    fired = {r for r in (reasons or []) if isinstance(r, str)}
+    if not fired:
+        return REVIEW_PRIORITY_NONE
+    return (REVIEW_PRIORITY_ATTENTION if fired & REVIEW_ATTENTION_RULES
+            else REVIEW_PRIORITY_NOTED)
 
 
 @dataclass
@@ -237,9 +272,12 @@ def evaluate_review_rules(ctx: DoneTaskContext) -> tuple[bool, list[str], Option
     if ctx.session_id and ctx.workspaces_root:
         root = str(ctx.workspaces_root).rstrip("/")
         for path in _all_paths(ctx):
-            if path.startswith("/") and not path.startswith(root + "/") and path != root:
-                fired.append("R9")
-                break
+            if not path.startswith("/") or path == root or path.startswith(root + "/"):
+                continue
+            if _HERMES_HOME_PATH_RE.match(path):
+                continue  # the fleet's own home — a normal deliverable location
+            fired.append("R9")
+            break
 
     fired = sorted(set(fired), key=RULE_ORDER.index)
     if not fired:
@@ -365,15 +403,26 @@ def _changed_files(task_id: str) -> list[str]:
 
 
 def _coerce_meta_list(task_id: str, key: str) -> list[str]:
+    """Union of ``key`` across every run's metadata, newest-first, order-preserving.
+
+    A first-hit read is wrong on the live board: the newest run often omits ``changed_files``
+    (a re-run or a handoff-only attempt records only ``artifacts``), so reading a single run
+    starved R7/R9 of the paths they exist to check. Union is the honest read — a path declared
+    by any attempt is still a path this task touched.
+    """
     conn = _hook_conn()
     try:
+        seen: dict[str, None] = {}
         for run in reversed(kb.list_runs(conn, task_id) or []):
             metadata = getattr(run, "metadata", None)
-            if isinstance(metadata, dict) and metadata.get(key):
-                return _coerce_path_list(metadata.get(key))
+            if not isinstance(metadata, dict) or not metadata.get(key):
+                continue
+            for path in _coerce_path_list(metadata.get(key)):
+                if path:
+                    seen.setdefault(path, None)
+        return list(seen)
     finally:
         conn.close()
-    return []
 
 
 # --- Context assembly -------------------------------------------------------
@@ -474,11 +523,20 @@ def _children_for(conn: sqlite3.Connection, task_id: str) -> list[str]:
 
 SUMMARY_SYSTEM_PROMPT = (
     "You summarise one completed software/ops task for a non-technical shop owner. "
-    "Reply with JSON only: {\"summary\": string, \"review_hint\": string|null}. "
+    "Reply with JSON only: {\"summary\": string, \"owner_decision\": boolean, "
+    "\"review_hint\": string|null}. "
+    "`owner_decision` is true ONLY when a person must now do something: approve or choose "
+    "between options, check a number you could not verify, fix something broken or still "
+    "unfinished. It is false when the work finished cleanly and nothing is left open — that is "
+    "the normal case, including anything merely about money, prices, files, tickets, quotes or "
+    "deletions. "
     "`summary` is 1-3 short sentences, plain words, no file paths, no ids, no tool names, "
     "no markdown, max 600 characters. Say what was actually done and what it means. "
-    "`review_hint` is null unless the owner should personally look at this; if so, one "
-    "short sentence saying why."
+    "`review_hint` must be null for the ordinary case — most tasks are routine and need no "
+    "owner attention. Set it only when the owner would genuinely have to decide something, "
+    "check a number, or fix something that is wrong, unverified or still open; one short "
+    "sentence saying why. Never set it merely because money, prices, files or deletions are "
+    "mentioned, and never to restate the summary."
 )
 
 
@@ -557,6 +615,18 @@ def _call_summary_llm_inner(ctx: DoneTaskContext, task_id: str) -> tuple[Optiona
     return parsed, None
 
 
+def _owner_decision(parsed: dict) -> bool:
+    """Did the model say a person has to act? (v3 R8 gate; tolerant of model spellings.)"""
+    raw = parsed.get("owner_decision")
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"true", "yes", "y", "1"}
+    return False
+
+
 def _fallback_summary(title: Optional[str], why: str) -> str:
     """Usable summary when the model is unavailable (spec §2.3) — never blank."""
     head = kb._first_line(title, 200) or "(untitled task)"
@@ -632,6 +702,7 @@ def _decode_row(row: sqlite3.Row) -> dict:
         "review_reasons": _json_list(row["review_reasons"]),
         "review_reason": row["review_reason"],
         "review_rule_version": row["review_rule_version"],
+        "review_priority": review_priority(_json_list(row["review_reasons"])),
         "archive_state": row["archive_state"],
         "archive_requested_at": row["archive_requested_at"],
         "archive_requested_by": row["archive_requested_by"],
@@ -718,8 +789,9 @@ def _generate_locked(conn: sqlite3.Connection, task_id: str, *, board: Optional[
         else:
             summary = _redact(text)[:SUMMARY_MAX_CHARS]
             source = SUMMARY_SOURCE_LLM
+            # v3: the hint only counts when the model also says a person must act (R8 gate).
             hint = parsed.get("review_hint")
-            if isinstance(hint, str) and hint.strip():
+            if isinstance(hint, str) and hint.strip() and _owner_decision(parsed):
                 ctx.metadata["review_hint"] = hint.strip()
 
     if summary is None:
@@ -816,6 +888,71 @@ def generate_pending(conn: Optional[sqlite3.Connection] = None, *, board: Option
                 pass
 
 
+# --- Background sweep kick (fleet-wide safety net) ---------------------------
+#
+# WHY THIS EXISTS (card t_1d19e4b5): the ``kanban_task_completed`` hook only fires in a
+# process that has this plug-in loaded. Every Kanban worker runs under a profile-scoped
+# HERMES_HOME (and is fenced from board writes), so the hook alone never covered the fleet:
+# the live board reached 122 done tasks with 0 stored digests. The sweep is the standing
+# answer, and it must be reachable from a non-worker process that owns the board.
+# ``kick_background_sweep`` is that door, used by (a) the dispatcher's
+# ``on_kanban_dispatch_tick`` hook in the gateway and (b) the dashboard's ``GET /done`` so
+# opening the panel heals itself without a restart.
+
+_SWEEP_KICK_LOCK = threading.Lock()
+_SWEEP_KICK_LAST = 0.0
+_SWEEP_KICK_IN_FLIGHT = False
+#: Seconds between two automatic sweeps; the dispatcher ticks far faster than this.
+SWEEP_KICK_INTERVAL_SECONDS = 60.0
+
+
+def kick_background_sweep(board: Optional[str] = None, *,
+                          interval: float = SWEEP_KICK_INTERVAL_SECONDS,
+                          limit: int = SWEEP_LIMIT,
+                          generated_by: str = "sweep:auto") -> bool:
+    """Start at most one bounded sweep pass in a daemon thread.
+
+    Returns ``True`` when a pass was started, ``False`` when one is already running or the
+    throttle window has not elapsed. Never raises and never blocks the caller: the LLM pass
+    inside a sweep can take up to 45s per task, which is far too slow to run on a dispatcher
+    tick or inside an HTTP request.
+    """
+    global _SWEEP_KICK_LAST, _SWEEP_KICK_IN_FLIGHT
+    try:
+        now = time.time()
+        with _SWEEP_KICK_LOCK:
+            if _SWEEP_KICK_IN_FLIGHT:
+                return False
+            if interval > 0 and (now - _SWEEP_KICK_LAST) < interval:
+                return False
+            _SWEEP_KICK_IN_FLIGHT = True
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+    def _run() -> None:
+        global _SWEEP_KICK_LAST, _SWEEP_KICK_IN_FLIGHT
+        try:
+            res = generate_pending(board=board, limit=limit, generated_by=generated_by)
+            if res.get("candidates"):
+                log.info("done-tasks sweep(%s): %s generated, %s failed",
+                         generated_by, res.get("generated"), res.get("failed"))
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("done-tasks sweep(%s) failed: %s", generated_by, exc)
+        finally:
+            with _SWEEP_KICK_LOCK:
+                _SWEEP_KICK_LAST = time.time()
+                _SWEEP_KICK_IN_FLIGHT = False
+
+    try:
+        threading.Thread(target=_run, name="done-tasks-sweep", daemon=True).start()
+        return True
+    except Exception as exc:  # pragma: no cover - defensive
+        with _SWEEP_KICK_LOCK:
+            _SWEEP_KICK_IN_FLIGHT = False
+        log.debug("done-tasks sweep thread failed to start: %s", exc)
+        return False
+
+
 def mark_manual(conn: sqlite3.Connection, task_id: str, summary: str, *,
                 actor: str = "manual") -> dict:
     """Record a hand-written summary (``summary_source='manual'``); sweeps never overwrite it."""
@@ -838,8 +975,8 @@ def mark_manual(conn: sqlite3.Connection, task_id: str, summary: str, *,
 # --- Read API (spec §5.1/§5.2, §5.5) ---------------------------------------
 
 def list_done(*, board: Optional[str] = None, include_archived: bool = False,
-              only_review: bool = False, limit: int = 50, offset: int = 0,
-              conn: Optional[sqlite3.Connection] = None) -> dict:
+              only_review: bool = False, only_attention: bool = False, limit: int = 50,
+              offset: int = 0, conn: Optional[sqlite3.Connection] = None) -> dict:
     """The done listing the UI calls: summary + review flag + review reason per task.
 
     Response shape is exactly spec §5.1: ``{board, now, total, returned, items[]}`` ordered
@@ -858,6 +995,12 @@ def list_done(*, board: Optional[str] = None, include_archived: bool = False,
             where.append("(s.archive_state IS NULL OR s.archive_state != 'archived')")
         if only_review:
             where.append("s.review_flag = 1")
+        if only_attention:
+            # Same rule set as review_priority(..., 'attention'), expressed in SQL so the
+            # filter is honest about `total` and stays pageable.
+            like = " OR ".join(f"s.review_reasons LIKE '%\"{r}\"%'"
+                               for r in sorted(REVIEW_ATTENTION_RULES))
+            where.append(f"({like})")
         clause = " AND ".join(where)
 
         total = c.execute(
@@ -910,6 +1053,7 @@ def _pending_item(c: sqlite3.Connection, task_id: str) -> dict:
         "review_reasons": [],
         "review_reason": None,
         "review_rule_version": REVIEW_RULE_VERSION,
+        "review_priority": REVIEW_PRIORITY_NONE,
         "archive_state": "active",
         "archived_at": None,
         "archived_by": None,
@@ -937,6 +1081,7 @@ def _item_from_joined_row(c: sqlite3.Connection, row: sqlite3.Row) -> dict:
         "review_reasons": _json_list(row["review_reasons"]),
         "review_reason": row["review_reason"],
         "review_rule_version": row["review_rule_version"],
+        "review_priority": review_priority(_json_list(row["review_reasons"])),
         "archive_state": row["archive_state"],
         "archived_at": row["archived_at"],
         "archived_by": row["archived_by"],

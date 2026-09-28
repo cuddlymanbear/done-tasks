@@ -25,13 +25,13 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import done_tasks_archive as dta
 
-
 def _hermes_repo() -> Path:
     """The Hermes install whose ``hermes_cli`` package is under test.
 
     ``HERMES_AGENT_REPO`` wins; otherwise search up from this file and fall back to
     ``~/.hermes/hermes-agent``. Run ``./install.sh`` first so the plug-in half and the
-    core modules are in place.
+    core modules are in place. (This repo is a *distribution*: the tests are run from a
+    directory that is not the Hermes checkout, so the install is resolved, not assumed.)
     """
     env = os.environ.get("HERMES_AGENT_REPO")
     if env:
@@ -48,10 +48,10 @@ def _hermes_repo() -> Path:
 
 
 _REPO = _hermes_repo()
-# The plug-in half is INSTALLED at <hermes home>/plugins/done-tasks/ — and this repo also
-# carries that tree under plugin/. Resolve it from the Hermes repo so the test reads the
-# installed artefact without depending on plug-in discovery, and do NOT re-derive it from
-# Path.home() — the fixture monkeypatches that to tmp_path.
+# The plug-in ships in-repo at plugins/done-tasks/ (the sibling summary card created the
+# package and reserved dashboard/ for this card). Load the router by path so the test does
+# not depend on plug-in discovery, and do NOT re-derive it from Path.home() — the fixture
+# monkeypatches that to tmp_path.
 PLUGIN_FILE = _REPO / "plugins" / "done-tasks" / "dashboard" / "plugin_api.py"
 
 
@@ -495,9 +495,9 @@ def test_listing_is_newest_first_and_shape_is_stable(client):
     assert set(item) == {
         "task_id", "title", "assignee", "created_by", "completed_at", "summary",
         "summary_source", "artifacts", "artifact_count", "review_flag", "review_reasons",
-        "review_reason", "review_rule_version", "archive_state", "archive_requested_at",
-        "archive_requested_by", "archived_at", "archived_by", "generated_at", "fallback",
-        "pending",
+        "review_reason", "review_rule_version", "review_priority", "archive_state",
+        "archive_requested_at", "archive_requested_by", "archived_at", "archived_by",
+        "generated_at", "fallback", "pending",
     }
     assert payload["returned"] == len(payload["items"])
     assert payload["total"] == 2

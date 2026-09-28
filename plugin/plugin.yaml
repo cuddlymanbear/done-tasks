@@ -4,3 +4,6 @@ description: "Done Tasks summary plug-in — stores a short human-readable diges
 author: "NousResearch (Osoyoos Signs fleet)"
 provides_hooks:
   - kanban_task_completed
+  # Fleet-wide safety net (t_1d19e4b5): the dispatcher runs in the gateway, which is not a
+  # fenced worker, so this sweeps digests for completions from every bot profile.
+  - on_kanban_dispatch_tick

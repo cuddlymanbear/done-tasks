@@ -22,7 +22,10 @@ fi
 echo "== python tests (board + plug-in API) =="
 # HERMES_KANBAN_* are injected into Hermes worker shells and would point the tests at a
 # live board; drop them so the fixtures stay isolated (this is what bit us once).
+# HERMES_DELEGATED_CHILD_CONTEXT fences a Kanban worker's shell out of board writes — a
+# worker running this suite would otherwise fail every fixture with PermissionError.
 env -u HERMES_KANBAN_DB -u HERMES_KANBAN_HOME -u HERMES_KANBAN_BOARD \
+  -u HERMES_DELEGATED_CHILD_CONTEXT \
   PYTHONPATH="$HERMES_AGENT_REPO${PYTHONPATH:+:$PYTHONPATH}" \
   "$PY" -m pytest -q "$ROOT/tests/test_done_tasks_summary.py" "$ROOT/tests/test_kanban_done_tasks_archive.py"
 

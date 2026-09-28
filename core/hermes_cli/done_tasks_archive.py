@@ -50,6 +50,26 @@ DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
 
 
+#: Rules that raise the owner-facing badge. Kept in step with
+#: ``hermes_cli.done_tasks_summary.REVIEW_ATTENTION_RULES`` by calling that module when it is
+#: importable; this copy exists only so the listing still works standalone (the sibling module
+#: is imported lazily by design).
+_ATTENTION_RULES = frozenset({"R1", "R3", "R5", "R7", "R8"})
+
+
+def _review_priority(reasons: list[str]) -> str:
+    """``attention | noted | none`` for a fired-rule set (v3, card t_1d19e4b5)."""
+    try:
+        from hermes_cli import done_tasks_summary as dts
+
+        return dts.review_priority(reasons)
+    except Exception:  # pragma: no cover - standalone degradation
+        fired = {r for r in (reasons or []) if str(r).strip()}
+        if not fired:
+            return "none"
+        return "attention" if fired & _ATTENTION_RULES else "noted"
+
+
 @dataclass
 class DoneTask:
     """One row of the done listing. ``raw`` is the DB row, or ``None`` for a pending task."""
@@ -79,6 +99,16 @@ class DoneTask:
     def pending(self) -> bool:
         return self.summary_source == SOURCE_PENDING
 
+    @property
+    def review_priority(self) -> str:
+        """``attention | noted | none`` — v3 (card t_1d19e4b5).
+
+        Derived from ``review_reasons`` rather than stored, so every construction path (row
+        decode, pending synthesis, a test that builds the dataclass by hand) grades the same
+        way and history can be re-graded without a regeneration pass.
+        """
+        return _review_priority(self.review_reasons)
+
     def to_dict(self) -> dict[str, Any]:
         """Response shape for §5.1 (exact key set; no summary-row internals leak)."""
         return {
@@ -95,6 +125,7 @@ class DoneTask:
             "review_reasons": list(self.review_reasons),
             "review_reason": self.review_reason,
             "review_rule_version": self.review_rule_version,
+            "review_priority": self.review_priority,
             "archive_state": self.archive_state,
             "archive_requested_at": self.archive_requested_at,
             "archive_requested_by": self.archive_requested_by,
@@ -218,6 +249,7 @@ def list_done(
     *,
     include_archived: bool = False,
     only_review: bool = False,
+    only_attention: bool = False,
     limit: int = DEFAULT_LIMIT,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -238,6 +270,10 @@ def list_done(
         params.append(ARCHIVE_ARCHIVED)
     if only_review:
         where.append("s.review_flag = 1")
+    if only_attention:
+        # The owner's real question — "does this need me?" — not "did any rule fire".
+        like = " OR ".join(f"s.review_reasons LIKE '%\"{r}\"%'" for r in sorted(_ATTENTION_RULES))
+        where.append(f"({like})")
     clause = " AND ".join(where)
 
     total = conn.execute(

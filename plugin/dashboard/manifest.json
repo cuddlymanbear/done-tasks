@@ -3,10 +3,12 @@
   "label": "Done Tasks",
   "description": "A digest of finished work — what each card actually did, which ones want your eyes, and one tap to file the rest",
   "icon": "CheckCheck",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "tab": {
     "path": "/done-tasks",
     "position": "after:kanban"
   },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
   "api": "plugin_api.py"
 }
