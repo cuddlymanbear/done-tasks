@@ -140,6 +140,7 @@ const checks1 = {
   'flagged row has the accent rail': html.includes('bg-amber-400'),
   'assignee rendered': html.includes('daemon') && html.includes('gnosis') && html.includes('coin'),
   'archive control rendered': html.includes('Mark for archive'),
+  'no Restore label in the default view (D1)': !html.includes('>Restore<') && !html.includes('Restore —'),
   'archive ENABLED when backend live': !/disabled=""[^>]*data-size="micro"/.test(html),
   'relative completion time rendered': /(m ago|h ago|just now|d ago)/.test(html),
   'exact time in the title attr': /title="[^"]*\d{4}|\d{2}:\d{2}/.test(html),

@@ -244,6 +244,13 @@ function needsAttention(item) {
   return !!(item && item.review_flag)
 }
 
+/** A row the archive service has filed away. The Archived filter is archived-only
+ *  (defect t_cbc4f9dc / D3): before this, that view rendered the whole board while
+ *  its count line claimed to be the archive. */
+function isArchived(item) {
+  return !!(item && item.archive_state && item.archive_state !== 'active')
+}
+
 /** A row where rules fired on routine prose only: worth a quiet note, not a badge. */
 function notedReason(item) {
   if (!item || needsAttention(item)) return null
@@ -279,7 +286,7 @@ function ReviewBadge({ item }) {
   })
 }
 
-function DoneRow({ item, onArchive, archiving, writeEnabled }) {
+function DoneRow({ item, onArchive, archiving, writeEnabled, restoring }) {
   const flagged = needsAttention(item)
   const noted = notedReason(item)
   const note = sourceNote(item)
@@ -332,12 +339,20 @@ function DoneRow({ item, onArchive, archiving, writeEnabled }) {
                 size: 'micro',
                 variant: 'ghost',
                 disabled: !writeEnabled || archiving,
+                // The label follows the ACTION, not the view it was written for: the
+                // Archived list is the restore path, so its button must say so
+                // (defect t_cbc4f9dc / D1 — it used to read "Mark for archive" while
+                // calling restore(), so the user hunting for Restore found nothing).
                 title: writeEnabled
-                  ? 'Mark for archive — hides it from this list, restorable from the Archived filter'
+                  ? restoring
+                    ? 'Restore — puts it back in the All done list'
+                    : 'Mark for archive — hides it from this list, restorable from the Archived filter'
                   : 'The archive service has not shipped yet',
                 className: 'shrink-0 text-(--ui-text-tertiary) hover:text-(--ui-text-primary)',
                 onClick: () => onArchive(item),
-                children: archiving ? 'Archiving…' : 'Mark for archive'
+                children: archiving
+                  ? (restoring ? 'Restoring…' : 'Archiving…')
+                  : (restoring ? 'Restore' : 'Mark for archive')
               })
             ]
           })
@@ -389,7 +404,12 @@ function DoneTasksPage() {
   const [view, setView] = useState('active') // active | review | archived
   const [archiving, setArchiving] = useState(null)
   const [busyError, setBusyError] = useState(null)
-  const [localHidden, setLocalHidden] = useState([])
+  // Rows hidden straight after a click, so the card leaves the list without waiting
+  // for a refetch. Scoped to the data snapshot it was decided against: the moment a
+  // new payload lands the backend is the truth again. A plain never-cleared id list
+  // (defect t_cbc4f9dc / D2) kept a just-archived row invisible under the Archived
+  // filter for the life of the page instance — "where did my row go?".
+  const [hidden, setHidden] = useState({ snapshot: null, ids: [] })
 
   const includeArchived = view === 'archived'
 
@@ -420,13 +440,28 @@ function DoneTasksPage() {
 
   const writeEnabled = !query.data || !query.data.degraded
 
+  // A hide only applies to the payload it was decided against: a fresh refetch (the
+  // Archived query's data, or the 60s interval) drops it and the backend wins again.
+  const localHidden = hidden.snapshot === query.data ? hidden.ids : []
+
   const raw = ((query.data && query.data.items) || []).filter(
     (it) => localHidden.indexOf(it.task_id) === -1
   )
   const items = useMemo(() => {
     if (view === 'review') return raw.filter((it) => needsAttention(it))
+    // Archived-only, so the count line describes this view and not the whole board.
+    if (view === 'archived') return raw.filter((it) => isArchived(it))
     return raw
   }, [raw, view])
+
+  // Hide a row for the CURRENT payload only: the next refetch replaces the snapshot,
+  // so the id stops being hidden exactly when the backend's answer arrives.
+  function hideRow(taskId) {
+    setHidden((prev) => ({
+      snapshot: query.data,
+      ids: (prev.snapshot === query.data ? prev.ids : []).concat([taskId])
+    }))
+  }
 
   async function markArchive(item) {
     setBusyError(null)
@@ -442,7 +477,7 @@ function DoneTasksPage() {
       } else {
         // Remove the row immediately: waiting for the refetch would leave the
         // card on screen for a second after the click and read as a dead action.
-        setLocalHidden((prev) => prev.concat([item.task_id]))
+        hideRow(item.task_id)
       }
     } catch (_e) {
       setBusyError("The archive service is not available yet, so nothing was filed. The task is still in the list.")
@@ -459,7 +494,7 @@ function DoneTasksPage() {
         method: 'POST',
         body: { task_ids: [item.task_id], actor: resolveActor() }
       })
-      setLocalHidden((prev) => prev.concat([item.task_id]))
+      hideRow(item.task_id)
     } catch (_e) {
       setBusyError("The archive service is not available yet, so nothing was restored.")
     } finally {
@@ -487,7 +522,12 @@ function DoneTasksPage() {
                 key: 'count',
                 className: 'text-xs text-(--ui-text-tertiary)',
                 children: query.data
-                  ? `${items.length} of ${query.data.total} shown`
+                  // The Archived list is archived-only, so `total` (every done task)
+                  // would describe the whole board rather than this view
+                  // (defect t_cbc4f9dc / D3).
+                  ? (view === 'archived'
+                      ? `${items.length} archived`
+                      : `${items.length} of ${query.data.total} shown`)
                   : 'loading…'
               }),
               reviewCount > 0
@@ -580,6 +620,7 @@ function DoneTasksPage() {
                       item: it,
                       archiving: archiving === it.task_id,
                       writeEnabled: writeEnabled || view === 'archived',
+                      restoring: view === 'archived',
                       onArchive: view === 'archived' ? restore : markArchive
                     }, it.task_id)
                   )

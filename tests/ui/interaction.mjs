@@ -206,6 +206,90 @@ const reviewLabel = document.querySelector('[data-segmented]')?.getAttribute('da
 console.log('review tab works     :', reviewLabel === 'review')
 const reviewOk = reviewLabel === 'review'
 
+// --- D1/D2/D3 (t_cbc4f9dc): the Archived filter is the restore path, in THIS page
+// instance, and its count describes the archive rather than the whole board. -------
+const labels = (text) =>
+  Array.from(document.querySelectorAll('li button')).filter((b) => b.textContent === text).length
+const buttonFor = (title, label) =>
+  Array.from(document.querySelectorAll('li'))
+    .filter((li) => li.textContent.includes(title))
+    .map((li) => Array.from(li.querySelectorAll('button')).find((b) => b.textContent === label))
+    .find(Boolean)
+const countLine = () => (text().match(/\d+ (of \d+ shown|archived)/) || ['(none)'])[0]
+
+document.getElementById('root').innerHTML = ''
+restCalls.length = 0
+let pageContrib3
+plugin.register({
+  register: () => () => {},
+  registerMany: (cs) => { pageContrib3 = cs.find((c) => c.area === 'routes'); return () => {} },
+  rest: ctx.rest
+})
+
+// The payload the panel starts on: everything active, as `include_archived=false` gives.
+const freshA = { ...items[0] }
+const freshB = { ...items[1] }
+const activePayload = { items: [freshA, freshB], total: 2, degraded: false }
+globalThis.__DONE__ = { board: 'default', total: 2, returned: 2, items: [freshA, freshB] }
+globalThis.__QUERY_STATE__ = { isLoading: false, isError: false, data: activePayload, error: null, refetch: () => {} }
+
+const root3 = ReactDOMClient.createRoot(document.getElementById('root'))
+await act(async () => { root3.render(React.createElement(pageContrib3.render)) })
+const activeLabel = buttonFor('First finished thing', 'Mark for archive')
+const d1ActiveOk = labels('Mark for archive') === 2 && labels('Restore') === 0 && !!activeLabel
+
+// Archive the first row — the backend has not answered yet, so this is the local hide.
+await act(async () => { activeLabel.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })) })
+await act(async () => { await new Promise((r) => setTimeout(r, 10)) })
+const archivedCall = restCalls.find((c) => c.path === '/archive')
+const hideOk = !!archivedCall && countRows() === 1 && rowCount('First finished thing') === 0
+console.log('\n=== D2: SAME-INSTANCE ARCHIVE -> ARCHIVED FILTER ===')
+console.log('after archive click  :', countRows(), 'row(s),', countLine())
+
+// The backend now answers the archived query: t_A is archived, t_B is not, and the
+// payload is a NEW object (as a real refetch is). No page reopen anywhere.
+const archivedPayload = {
+  items: [{ ...freshA, archive_state: 'archived' }, freshB],
+  total: 2,
+  degraded: false
+}
+globalThis.__QUERY_STATE__ = { isLoading: false, isError: false, data: archivedPayload, error: null, refetch: () => {} }
+
+await act(async () => {
+  document.querySelector('[data-opt="archived"]').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+})
+const restoreBtn = buttonFor('First finished thing', 'Restore')
+console.log('archived rows        :', countRows())
+console.log('count line           :', countLine())
+console.log('restore button found :', !!restoreBtn)
+console.log('  tooltip            :', restoreBtn && restoreBtn.getAttribute('title'))
+const labelOk2 = !!restoreBtn && labels('Restore') === 1 && labels('Mark for archive') === 0
+const tooltipOk = !!restoreBtn && /^Restore/.test(String(restoreBtn.getAttribute('title')))
+const d2VisibleOk = rowCount('First finished thing') === 1
+const d3ArchivedOnlyOk = countRows() === 1 && rowCount('Second finished thing') === 0
+const d3CountOk = countLine() === '1 archived'
+
+// And the Restore button really restores (the label is not just cosmetic).
+if (restoreBtn) {
+  await act(async () => { restoreBtn.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })) })
+  await act(async () => { await new Promise((r) => setTimeout(r, 10)) })
+}
+const unarchiveCall = restCalls.find((c) => c.path === '/unarchive')
+const restoreCallOk = !!unarchiveCall && unarchiveCall.opts.method === 'POST' &&
+  unarchiveCall.opts.body.task_ids[0] === 't_A' && typeof unarchiveCall.opts.body.actor === 'string'
+console.log('restore call         :', JSON.stringify(unarchiveCall && unarchiveCall.opts.body))
+console.log('rows after restore   :', countRows())
+
+// The hidden id must not outlive the payload it was decided against: once the restored
+// payload lands, "All done" shows the row again in this same page instance.
+const restoredPayload = { items: [{ ...freshA }, { ...freshB }], total: 2, degraded: false }
+globalThis.__QUERY_STATE__ = { isLoading: false, isError: false, data: restoredPayload, error: null, refetch: () => {} }
+await act(async () => {
+  document.querySelector('[data-opt="active"]').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+})
+console.log('all done after restore:', countRows(), 'row(s),', countLine())
+const unhideOk = countRows() === 2 && rowCount('First finished thing') === 1
+
 // --- report ---------------------------------------------------------------
 const checks = {
   'baseline: two rows render': baseOk1,
@@ -222,7 +306,16 @@ const checks = {
   'source: no @-shaped literal in the panel': srcOk1,
   'source: no hardcoded ACTOR constant': srcOk2,
   'archived filter selectable (recovery path)': filterOk,
-  'needs-review filter selectable': reviewOk
+  'needs-review filter selectable': reviewOk,
+  // D1/D2/D3 — t_cbc4f9dc
+  'active view labels the action "Mark for archive" (none say Restore)': d1ActiveOk,
+  'archived view labels the action "Restore" (none say "Mark for archive")': labelOk2,
+  'archived view tooltip is the Restore wording': tooltipOk,
+  'archived view button really calls POST /unarchive with the actor': restoreCallOk,
+  'D2: just-archived row is visible under Archived, same page instance': d2VisibleOk,
+  'D3: Archived view lists archived rows only': d3ArchivedOnlyOk,
+  'D3: Archived count reads "1 archived", not "of total shown"': d3CountOk,
+  'D2: hidden id dies with its payload (row back in All done)': unhideOk
 }
 console.log('\n=== CHECKS ===')
 let fail = 0
