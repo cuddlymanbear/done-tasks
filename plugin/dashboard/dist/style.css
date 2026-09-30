@@ -1,0 +1,150 @@
+/* Hermes "Done Tasks" dashboard plugin — local styling only.
+   Layout uses the host's own grid/spacing classes; these rules add the pieces the digest
+   needs (row rhythm, the review accent, summary type size) without touching host styles. */
+
+.done-tasks-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 1100px;
+}
+
+.done-tasks-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.done-tasks-h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.done-tasks-sub {
+  font-size: 0.8rem;
+  opacity: 0.7;
+  margin-top: 2px;
+}
+
+.done-tasks-views {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.done-tasks-view--on {
+  text-decoration: underline;
+}
+
+.done-tasks-card-content {
+  padding: 12px 14px;
+}
+
+.done-tasks-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Flagged rows: an accent rail so the eye lands on them while scrolling. */
+.done-tasks-row--flag {
+  border-left: 3px solid #d97706;
+  padding-left: 10px;
+}
+
+.done-tasks-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.done-tasks-row-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.done-tasks-badge {
+  font-size: 0.65rem;
+  letter-spacing: 0.04em;
+}
+
+.done-tasks-row-meta {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 0.75rem;
+  opacity: 0.75;
+}
+
+.done-tasks-pill {
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 0.7rem;
+}
+
+.done-tasks-summary {
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.done-tasks-note {
+  font-size: 0.75rem;
+  opacity: 0.7;
+  font-style: italic;
+}
+
+.done-tasks-reason {
+  font-size: 0.78rem;
+  color: #b45309;
+}
+
+/* v3 (card t_1d19e4b5): the quiet tier — rules matched routine prose, so it is a note,
+   not the amber badge the owner is meant to triage on. */
+.done-tasks-reason--noted {
+  color: inherit;
+  opacity: 0.6;
+}
+
+.done-tasks-noted {
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 0.65rem;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+}
+
+.done-tasks-row-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.done-tasks-empty,
+.done-tasks-foot {
+  font-size: 0.85rem;
+  opacity: 0.75;
+  padding: 8px 2px;
+}
+
+.done-tasks-msg {
+  font-size: 0.85rem;
+  padding: 8px 10px;
+  border-radius: 6px;
+}
+
+.done-tasks-msg--ok {
+  background: rgba(22, 163, 74, 0.12);
+  color: #15803d;
+}
+
+.done-tasks-msg--err {
+  background: rgba(220, 38, 38, 0.12);
+  color: #b91c1c;
+}

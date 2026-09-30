@@ -68,7 +68,11 @@ Then:
 
 ### Getting it on a fresh machine
 
-Nothing in the project is excluded from this repo. There are no data files, binaries, submodules
+Everything the install needs is in this repo — the plug-in sources, the shipped panel bundle
+(`plugin/dashboard/dist/`, tracked on purpose; the tab renders empty without it), the core
+modules and the core patch. The only things `.gitignore` drops are generated output that is
+rebuilt locally: `.pytest_cache/`, `tests/__pycache__/` and `tests/ui/out/` (harness HTML and
+screenshots). There are no data files, binaries, submodules
 or download steps, and nothing to fetch separately: `git clone` (above) + `./install.sh` is the
 whole setup. The plug-in holds no credentials of its own, so a fresh machine needs only a Hermes
 install at the two paths `install.sh` takes, plus the one core patch — which `install.sh` applies

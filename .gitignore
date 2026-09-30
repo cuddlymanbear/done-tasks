@@ -34,6 +34,11 @@ tests/ui/out/
 
 # --- build / editor / OS ----------------------------------------------------
 dist/
+# ...except the plug-in's shipped panel bundle: it is source here, not build output.
+# install.sh copies plugin/dashboard/dist/{index.js,style.css} and the tab renders
+# empty without them, so they must stay tracked. (Re-include the dir AND its contents.)
+!plugin/dashboard/dist/
+!plugin/dashboard/dist/**
 build/
 coverage/
 .DS_Store
