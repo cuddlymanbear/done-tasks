@@ -47,7 +47,7 @@ This repo is a flat mirror of the two Hermes trees it lands in.
 ## Install
 
 ```
-git clone <this repo> done-tasks
+git clone https://github.com/cuddlymanbear/done-tasks.git done-tasks
 cd done-tasks
 ./install.sh                       # ~/.hermes + ~/.hermes/hermes-agent
 ```
@@ -65,6 +65,14 @@ Then:
 2. **Restart the gateway / desktop app** so the panel and the HTTP routes load.
 3. Optional: backfill digests for cards that finished before it was installed —
    `/done-summary backfill --limit 50` (needs no cron; the completion hook is live from then on).
+
+### Getting it on a fresh machine
+
+Nothing in the project is excluded from this repo. There are no data files, binaries, submodules
+or download steps, and nothing to fetch separately: `git clone` (above) + `./install.sh` is the
+whole setup. The plug-in holds no credentials of its own, so a fresh machine needs only a Hermes
+install at the two paths `install.sh` takes, plus the one core patch — which `install.sh` applies
+for you.
 
 ### Requirements and environment
 
